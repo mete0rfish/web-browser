@@ -26,7 +26,8 @@ void search_handler(int connection_sock) {
 
     buffer[received] = '\0';
 
-    char *search_query = strstr(buffer, "search="); // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
+    // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
+    char *search_query = strstr(buffer, "search=");
 
     if (search_query) {
         /*
@@ -36,14 +37,14 @@ void search_handler(int connection_sock) {
         char *end = strchr(search_query, ' '); // 공백문자 위치 반환
         if (end) *end = '\0';
 
+        // search_query를 URL 쿼리 파라미터로 사용하여 검색 요청을 형성.
         char google_request[BUFFER_SIZE];
         snprintf(google_request, sizeof(google_request), 
                  "GET /search?q=%s HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n", 
-                 search_query); 
-        // search_query를 URL 쿼리 파라미터로 사용하여 검색 요청을 형성.
-        
+                 search_query);
+
         /*
-         *구글에게 REQUEST 
+         * 구글에게 REQUEST 
          */ 
         int google_sock = socket(AF_INET, SOCK_STREAM, 0); // 구글에 연결할 소켓 생성(IPv4), SOCK_STREAM : TCP사용하겠다.
         struct sockaddr_in google_address; // google 주소 구조체
@@ -55,18 +56,32 @@ void search_handler(int connection_sock) {
 
         connect(google_sock, (struct sockaddr*)&google_address, sizeof(google_address));
         send(google_sock, google_request, strlen(google_request), 0);
-        
-        /*
-         *  구글의 RESPONSE
-         */
-        char response[BUFFER_SIZE];
-        int total_received = 0;
-        int rcvd_bytes;
 
-        while ((rcvd_bytes = recv(google_sock, response + total_received, sizeof(response) - total_received - 1, 0)) > 0) {
+        /*
+         * 구글의 RESPONSE
+         * 동적 메모리 할당을 통해 응답 데이터를 받기 위한 배열을 준비
+         */
+        int response_size = BUFFER_SIZE; // 초기 크기
+        char *response = (char *)malloc(response_size); // 동적 메모리 할당
+        int total_received = 0; // 총 수신된 바이트 수 저장 변수
+        int rcvd_bytes; // 각 recv 호출 시 수신된 바이트 수 저장 변수
+
+        while ((rcvd_bytes = recv(google_sock, response + total_received, response_size - total_received - 1, 0)) > 0) {
             total_received += rcvd_bytes;
+
+            // 메모리 크기가 초과되면 realloc으로 크기를 두 배로 늘림
+            if (total_received >= response_size - 1) {
+                response_size *= 2;
+                response = (char *)realloc(response, response_size);
+                if (!response) { // 메모리 할당 실패 시
+                    perror("Memory allocation failed");
+                    closeSocket(google_sock);
+                    closeSocket(connection_sock);
+                    return;
+                }
+            }
         }
-        response[total_received] = '\0';
+        response[total_received] = '\0'; // null 문자로 응답 데이터 종료
 
         /***** react(client)에서 포트5173을 사용하고, 지금 이 서버코드는 8080포트를 사용하기 때문에 cors에러 해결 *****/
         const char *cors_headers = "HTTP/1.1 200 OK\r\n"
@@ -74,12 +89,13 @@ void search_handler(int connection_sock) {
                                    "Content-Type: text/html\r\n"
                                    "Connection: close\r\n\r\n";
 
-        send(connection_sock, cors_headers, strlen(cors_headers), 0);
-        send(connection_sock, response, total_received, 0);
+        send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
+        send(connection_sock, response, total_received, 0); // 구글 응답 데이터 전송
 
-        closeSocket(google_sock);
+        free(response); // 동적 메모리 해제
+        closeSocket(google_sock); // 구글 소켓 닫기
     }
-    closeSocket(connection_sock);
+    closeSocket(connection_sock); // 클라이언트 소켓 닫기
 }
 
 int main() {
@@ -89,7 +105,7 @@ int main() {
     #endif
 
     int server_sock = socket(AF_INET, SOCK_STREAM, 0); // 서버소켓 생성
-    struct sockaddr_in server_address; // 서버 구조 구조체
+    struct sockaddr_in server_address; // 서버 주소 구조체
     server_address.sin_family = AF_INET; // IPv4
     server_address.sin_port = htons(PORT); // 8080포트 사용
     server_address.sin_addr.s_addr = INADDR_ANY;
