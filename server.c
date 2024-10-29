@@ -1,12 +1,5 @@
 #include "server.h"
 
-// react(client)에서 검색요청을 하면 8080포트로 요청을 보낸다.
-#define PORT 8080 
-#define BUFFER_SIZE 50000
-#define SEARCH_URL "/search="
-
-char buffer[BUFFER_SIZE]; // 수신 데이터
-
 void closeSocket(int socket) {
     #ifdef _WIN32
     closesocket(socket);
@@ -27,8 +20,71 @@ void receiveSocket(int connection_sock) {
     buffer[received] = '\0';
 }
 
+void handle_view(int connection_sock) {
+
+    // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
+    char *hostname = strstr(buffer, "view=");
+    printf("%s\n", hostname);
+
+    if (hostname) {
+        /*
+        * REQEUST
+        */
+        char web_request[BUFFER_SIZE];
+
+        int web_sock = socket(AF_INET, SOCK_STREAM, 0); // 가져올 뷰에 연결할 소켓 생성(IPv4), SOCK_STREAM : TCP사용하겠다.
+        struct sockaddr_in web_address; // google 주소 구조체
+        struct hostent *host = gethostbyname(hostname); // 도메인이름 => ip주소로 변환
+        
+        web_address.sin_family = AF_INET;
+        web_address.sin_port = htons(80);
+        memcpy(&web_address.sin_addr.s_addr, host->h_addr, host->h_length);
+
+        connect(web_sock, (struct sockaddr*)&web_address, sizeof(web_address));
+        send(web_sock, web_request, strlen(web_request), 0);
+
+        /*
+        * RESPONSE
+        */
+
+        int response_size = BUFFER_SIZE; // 초기 크기
+        char *response = (char *)malloc(response_size); // 동적 메모리 할당
+        int total_received = 0; // 총 수신된 바이트 수 저장 변수
+        int rcvd_bytes; // 각 recv 호출 시 수신된 바이트 수 저장 변수
+
+        while ((rcvd_bytes = recv(web_sock, response + total_received, response_size - total_received - 1, 0)) > 0) {
+            total_received += rcvd_bytes;
+
+            // 메모리 크기가 초과되면 realloc으로 크기를 두 배로 늘림
+            if (total_received >= response_size - 1) {
+                response_size *= 2;
+                response = (char *)realloc(response, response_size);
+                if (!response) { // 메모리 할당 실패 시
+                    perror("Memory allocation failed");
+                    closeSocket(web_sock);
+                    closeSocket(connection_sock);
+                    return;
+                }
+            }
+        }
+        response[total_received] = '\0'; // null 문자로 응답 데이터 종료
+
+        /***** react(client)에서 포트5173을 사용하고, 지금 이 서버코드는 8080포트를 사용하기 때문에 cors에러 해결 *****/
+        const char *cors_headers = "HTTP/1.1 200 OK\r\n"
+                                    "Access-Control-Allow-Origin: *\r\n"
+                                    "Content-Type: text/html\r\n"
+                                    "Connection: close\r\n\r\n";
+
+        send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
+        send(connection_sock, response, total_received, 0); // 구글 응답 데이터 전송
+
+        free(response); // 동적 메모리 해제
+        closeSocket(web_sock); // 구글 소켓 닫기
+    }
+}
+
 // client 요청 처리 함수
-void search_handler(int connection_sock) {
+void handle_search(int connection_sock) {
 
     // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
     char *search_query = strstr(buffer, "search=");
@@ -131,11 +187,11 @@ int main() {
         printf("%s %s\n", method, url);
 
         if(strstr(buffer, SEARCH_URL) != NULL) {
-            search_handler(connection_sock); // 요청 처리함수(위에 정의된 함수)
+            handle_search(connection_sock); // 요청 처리함수(위에 정의된 함수)
         }
         else {
             // TODO 웹 페이지 띄우기
-
+            handle_view(connection_sock);
         }
     }
 

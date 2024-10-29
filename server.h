@@ -17,4 +17,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// react(client)에서 검색요청을 하면 8080포트로 요청을 보낸다.
+#define PORT 8080 
+#define BUFFER_SIZE 50000
+#define SEARCH_URL "/search="
+
+char buffer[BUFFER_SIZE]; // 수신 데이터
+
 #endif
