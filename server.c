@@ -3,6 +3,9 @@
 // react(client)에서 검색요청을 하면 8080포트로 요청을 보낸다.
 #define PORT 8080 
 #define BUFFER_SIZE 50000
+#define SEARCH_URL "/search="
+
+char buffer[BUFFER_SIZE]; // 수신 데이터
 
 void closeSocket(int socket) {
     #ifdef _WIN32
@@ -12,12 +15,9 @@ void closeSocket(int socket) {
     #endif
 }
 
-// client 요청 처리 함수
-void search_handler(int connection_sock) {
-
-    char buffer[BUFFER_SIZE]; // 수신 데이터
+void receiveSocket(int connection_sock) {
     int received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // 클라이언트로부터 데이터를 수신. 수신된 값은 received에 저장됨.
-    
+
     if (received <= 0) { // 수신 여부 체크해서 실패하면 소켓 close
         perror("recv failed");
         closeSocket(connection_sock);
@@ -25,6 +25,10 @@ void search_handler(int connection_sock) {
     }
 
     buffer[received] = '\0';
+}
+
+// client 요청 처리 함수
+void search_handler(int connection_sock) {
 
     // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
     char *search_query = strstr(buffer, "search=");
@@ -118,7 +122,21 @@ int main() {
     while (1) {
         // 서버는 계속해서 클라이언트의 요청을 대기한다.
         int connection_sock = accept(server_sock, NULL, NULL); // 클라이언트의 연결요청 수락
-        search_handler(connection_sock); // 요청 처리함수(위에 정의된 함수)
+        char method[10], url[256];
+
+        receiveSocket(connection_sock);
+
+        sscanf(buffer, "%s", method);
+        sscanf(buffer + strlen(method) + 1, "%s", url);
+        printf("%s %s\n", method, url);
+
+        if(strstr(buffer, SEARCH_URL) != NULL) {
+            search_handler(connection_sock); // 요청 처리함수(위에 정의된 함수)
+        }
+        else {
+            // TODO 웹 페이지 띄우기
+
+        }
     }
 
     close(server_sock); // POSIX에서는 close를 사용
