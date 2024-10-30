@@ -24,7 +24,7 @@ void handle_view(int connection_sock) {
 
     // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
     char *hostname = strstr(buffer, "view=");
-    printf("%s\n", hostname);
+    printf("I'm host name : %s\n", hostname);
 
     if (hostname) {
         /*
