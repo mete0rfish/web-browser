@@ -1,10 +1,10 @@
 #ifndef SERVER_H
-# define SERVER_H
+#define SERVER_H
 
 #ifdef _WIN32
     #include <winsock2.h>
-    #include <ws2tcpip.h> 
-    // 그 외 운영체제의 경우
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
 #else
     #include <sys/socket.h>
     #include <netinet/in.h>
@@ -16,12 +16,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <curl/curl.h>
+#include <iconv.h>
 
-// react(client)에서 검색요청을 하면 8080포트로 요청을 보낸다.
-#define PORT 8080 
+#define PORT 8080
 #define BUFFER_SIZE 50000
+#define VIEW_URL "/view="
 #define SEARCH_URL "/search="
 
 char buffer[BUFFER_SIZE]; // 수신 데이터
 
-#endif
+#endif // SERVER_H
