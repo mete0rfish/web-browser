@@ -13,12 +13,7 @@ export default function SearchBox() {
       );
       const data = await response.text();
 
-      let bodyContent = data.split("\r\n\r\n")[1];
-      bodyContent = bodyContent
-        .replace(/(\r\n)?[0-9a-fA-F]+\r\n/g, "")
-        .slice(0, -1);
-
-      setContent(bodyContent);
+      setContent(data);
     } catch (error) {
       console.error("Error fetching HTML:", error);
       setContent("Failed to fetch content.");
@@ -30,12 +25,7 @@ export default function SearchBox() {
       const response = await fetch(`http://localhost:8080/view=${viewTerm}`);
       const data = await response.text();
 
-      let bodyContent = data.split("\r\n\r\n")[1];
-      bodyContent = bodyContent
-        .replace(/(\r\n)?[0-9a-fA-F]+\r\n/g, "")
-        .slice(0, -1);
-
-      setContent(bodyContent);
+      setContent(data);
     } catch (error) {
       console.error("Error fetching HTML:", error);
       setContent("Failed to fetch content.");
