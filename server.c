@@ -24,25 +24,53 @@ void handle_view(int connection_sock) {
 
     // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
     char *hostname = strstr(buffer, "view=");
-    printf("I'm host name : %s\n", hostname);
 
     if (hostname) {
+
+        hostname += strlen("view=");
+        char *end = strchr(hostname, ' ');
+        if (end) *end = '\0';  // "view=" 이후의 위치로 이동
+
         /*
         * REQEUST
         */
+        struct addrinfo hints, *res;
+        int status = getaddrinfo(hostname, "80", &hints, &res);
         char web_request[BUFFER_SIZE];
 
-        int web_sock = socket(AF_INET, SOCK_STREAM, 0); // 가져올 뷰에 연결할 소켓 생성(IPv4), SOCK_STREAM : TCP사용하겠다.
-        struct sockaddr_in web_address; // google 주소 구조체
-        struct hostent *host = gethostbyname(hostname); // 도메인이름 => ip주소로 변환
+        if (status != 0) {
+            fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
+            return;
+        }
+
+        int web_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (web_sock == -1) {
+            perror("Socket creation failed");
+            freeaddrinfo(res);
+            return;
+        }
         
-        web_address.sin_family = AF_INET;
-        web_address.sin_port = htons(80);
-        memcpy(&web_address.sin_addr.s_addr, host->h_addr, host->h_length);
+        if (connect(web_sock, res->ai_addr, res->ai_addrlen) < 0) {
+            perror("Connection failed");
+            close(web_sock);
+            freeaddrinfo(res);
+            return;
+        }
+        freeaddrinfo(res); // 주소 정보 해제
+    
+        snprintf(web_request, BUFFER_SIZE, 
+             "GET / HTTP/1.1\r\n"
+             "Host: %s\r\n"
+             "Connection: close\r\n\r\n", 
+             hostname);
 
-        connect(web_sock, (struct sockaddr*)&web_address, sizeof(web_address));
-        send(web_sock, web_request, strlen(web_request), 0);
+        if (send(web_sock, web_request, strlen(web_request), 0) < 0) {
+            perror("Send failed");
+            close(web_sock);
+            return;
+        }
 
+        
         /*
         * RESPONSE
         */
@@ -76,8 +104,12 @@ void handle_view(int connection_sock) {
                                     "Connection: close\r\n\r\n";
 
         send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
-        send(connection_sock, response, total_received, 0); // 구글 응답 데이터 전송
+        send(connection_sock, response, total_received, 0);
+        printf("send completely\n");
+        
 
+
+        
         free(response); // 동적 메모리 해제
         closeSocket(web_sock); // 구글 소켓 닫기
     }
