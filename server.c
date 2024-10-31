@@ -21,64 +21,62 @@ void receiveSocket(int connection_sock) {
 }
 
 void handle_view(int connection_sock) {
+    // 수신된 buffer에서 문자열 "view="를 탐색 후 위치 반환
+    char *url_query = strstr(buffer, "view=");
 
-    // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
-    char *hostname = strstr(buffer, "view=");
+    if (url_query) {
+        /*
+         전처리
+         */
+        url_query += strlen("view=");  // "view="문자열의 끝으로 포인터 이동
+        char *end = strchr(url_query, ' ');  // 공백문자 위치 반환
+        if (end) *end = '\0';
 
-    if (hostname) {
-
-        hostname += strlen("view=");
-        char *end = strchr(hostname, ' ');
-        if (end) *end = '\0';  // "view=" 이후의 위치로 이동
+        // URL 쿼리 파라미터를 기반으로 HTTP 요청 작성
+        char web_request[BUFFER_SIZE];
+        snprintf(web_request, sizeof(web_request), 
+                 "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", 
+                 url_query);
 
         /*
-        * REQEUST
-        */
-        struct addrinfo hints, *res;
-        int status = getaddrinfo(hostname, "80", &hints, &res);
-        char web_request[BUFFER_SIZE];
+         * 원격 서버에 REQUEST
+         */
+        int web_sock = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in web_address;
+        struct hostent *host = gethostbyname(url_query);
 
-        if (status != 0) {
-            fprintf(stderr, "getaddrinfo error: %s\n", gai_strerror(status));
+        if (!host) {
+            perror("Host not found");
+            closeSocket(connection_sock);
             return;
         }
 
-        int web_sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
-        if (web_sock == -1) {
-            perror("Socket creation failed");
-            freeaddrinfo(res);
-            return;
-        }
-        
-        if (connect(web_sock, res->ai_addr, res->ai_addrlen) < 0) {
+        web_address.sin_family = AF_INET;
+        web_address.sin_port = htons(80);
+        memcpy(&web_address.sin_addr.s_addr, host->h_addr, host->h_length);
+
+        if (connect(web_sock, (struct sockaddr*)&web_address, sizeof(web_address)) < 0) {
             perror("Connection failed");
-            close(web_sock);
-            freeaddrinfo(res);
+            closeSocket(web_sock);
+            closeSocket(connection_sock);
             return;
         }
-        freeaddrinfo(res); // 주소 정보 해제
-    
-        snprintf(web_request, BUFFER_SIZE, 
-             "GET / HTTP/1.1\r\n"
-             "Host: %s\r\n"
-             "Connection: close\r\n\r\n", 
-             hostname);
 
         if (send(web_sock, web_request, strlen(web_request), 0) < 0) {
             perror("Send failed");
-            close(web_sock);
+            closeSocket(web_sock);
+            closeSocket(connection_sock);
             return;
         }
 
-        
         /*
-        * RESPONSE
-        */
-
-        int response_size = BUFFER_SIZE; // 초기 크기
-        char *response = (char *)malloc(response_size); // 동적 메모리 할당
-        int total_received = 0; // 총 수신된 바이트 수 저장 변수
-        int rcvd_bytes; // 각 recv 호출 시 수신된 바이트 수 저장 변수
+         * 원격 서버의 RESPONSE
+         * 동적 메모리 할당을 통해 응답 데이터를 받기 위한 배열을 준비
+         */
+        int response_size = BUFFER_SIZE;
+        char *response = (char *)malloc(response_size);
+        int total_received = 0;
+        int rcvd_bytes;
 
         while ((rcvd_bytes = recv(web_sock, response + total_received, response_size - total_received - 1, 0)) > 0) {
             total_received += rcvd_bytes;
@@ -87,7 +85,7 @@ void handle_view(int connection_sock) {
             if (total_received >= response_size - 1) {
                 response_size *= 2;
                 response = (char *)realloc(response, response_size);
-                if (!response) { // 메모리 할당 실패 시
+                if (!response) {
                     perror("Memory allocation failed");
                     closeSocket(web_sock);
                     closeSocket(connection_sock);
@@ -95,24 +93,21 @@ void handle_view(int connection_sock) {
                 }
             }
         }
-        response[total_received] = '\0'; // null 문자로 응답 데이터 종료
+        response[total_received] = '\0';  // null 문자로 응답 데이터 종료
 
-        /***** react(client)에서 포트5173을 사용하고, 지금 이 서버코드는 8080포트를 사용하기 때문에 cors에러 해결 *****/
+        /***** CORS 헤더를 추가하여 클라이언트에서의 CORS 에러 해결 *****/
         const char *cors_headers = "HTTP/1.1 200 OK\r\n"
-                                    "Access-Control-Allow-Origin: *\r\n"
-                                    "Content-Type: text/html\r\n"
-                                    "Connection: close\r\n\r\n";
+                                   "Access-Control-Allow-Origin: *\r\n"
+                                   "Content-Type: text/html\r\n"
+                                   "Connection: close\r\n\r\n";
 
-        send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
+        send(connection_sock, cors_headers, strlen(cors_headers), 0);
         send(connection_sock, response, total_received, 0);
-        printf("send completely\n");
-        
 
-
-        
-        free(response); // 동적 메모리 해제
-        closeSocket(web_sock); // 구글 소켓 닫기
+        free(response);
+        closeSocket(web_sock);
     }
+    closeSocket(connection_sock);
 }
 
 // client 요청 처리 함수
