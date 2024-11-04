@@ -222,6 +222,15 @@ void handle_history(int connection_sock) {
     closeSocket(connection_sock); // 소켓 닫기
 }
 
+//프로그램 종료시 검색기록이 존재하는 텍스트 파일 내용 삭제
+void delete_search_history() {
+    if (remove("search_history.txt") == 0) {
+        printf("검색 기록 파일이 삭제되었습니다.\n");
+    } else {
+        perror("파일 삭제 실패");
+    }
+}
+
 
 // 메인 함수
 int main() {
@@ -273,7 +282,10 @@ int main() {
      }
     }
 
+  
+
     close(server_sock); // 서버 소켓 닫기
+    delete_search_history();
     #ifdef _WIN32
         WSACleanup(); // Windows 소켓 정리
     #endif
