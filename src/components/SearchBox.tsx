@@ -101,7 +101,7 @@ export default function SearchBox() {
       ) : (
         <>
           <button
-            className="fixed bottom-10 right-10 hover:scale-125 transition-transform"
+            className="fixed top-10 right-10 hover:scale-125 transition-transform z-50"
             onClick={openModal}
           >
             <svg
