@@ -1,203 +1,281 @@
-#include "server.h"
+#include "server.h" // 서버 관련 헤더 파일 포함
 
+// 소켓을 닫는 함수
 void closeSocket(int socket) {
     #ifdef _WIN32
-    closesocket(socket);
+    closesocket(socket); // Windows의 경우 closesocket 사용
     #else
-    close(socket);
+    close(socket); // Unix 계열의 경우 close 사용
     #endif
 }
 
-void receiveSocket(int connection_sock) {
-    int received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // 클라이언트로부터 데이터를 수신. 수신된 값은 received에 저장됨.
+//파일에다 검색기록 로그 남기기
+void log_search_query(const char *query) {
+    FILE *file = fopen("search_history.txt", "a"); // 파일을 추가 모드로 엽니다.
+    if (file == NULL) {
+        perror("파일 열기 실패");
+        return;
+    }
+    fprintf(file, "%s\n", query); // 쿼리를 파일에 작성합니다.
+    fclose(file); // 파일을 닫습니다.
+}
 
-    if (received <= 0) { // 수신 여부 체크해서 실패하면 소켓 close
-        perror("recv failed");
+// 클라이언트로부터 데이터를 수신하는 함수
+void receiveSocket(int connection_sock) {
+    int received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // 클라이언트로부터 데이터 수신
+    if (received <= 0) {
+        perror("recv failed"); // 수신 실패 시 에러 출력
+        closeSocket(connection_sock); // 소켓 닫기
+        return;
+    }
+    buffer[received] = '\0'; // 버퍼를 null로 종료하여 문자열로 만듦
+}
+
+// CURL에서 호출되는 데이터 쓰기 콜백 함수
+size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb; // 실제 수신 데이터 크기
+    char **buffer = (char **)userp; // 사용자 포인터를 char 포인터로 변환
+
+    // 현재 버퍼의 크기와 수신할 데이터의 크기를 확인
+    size_t current_length = strlen(*buffer);
+    size_t new_size = current_length + realsize + 1; // +1 for null terminator
+
+    // 버퍼 크기 늘리기
+    char *new_buffer = realloc(*buffer, new_size); // 기존 버퍼 크기 재할당
+    if (!new_buffer) {
+        fprintf(stderr, "Failed to reallocate memory\n"); // 재할당 실패 시 에러 출력
+        return 0; // 메모리 재할당 실패 시
+    }
+    *buffer = new_buffer; // 새로운 버퍼 포인터 할당
+
+    // 데이터 복사
+    strncat(*buffer, contents, realsize); // 수신된 데이터를 기존 버퍼에 붙여넣기
+    return realsize; // 수신된 데이터 크기 반환
+}
+
+// Google 응답으로 charset=ISO-8859-1 을 주기 때문에 UTF-8형식으로 변환
+char* convert_encoding(const char* input, const char* from_enc, const char* to_enc) {
+    iconv_t conv = iconv_open(to_enc, from_enc);
+    if (conv == (iconv_t)-1) {
+        perror("iconv_open");
+        return NULL;
+    }
+
+    size_t in_bytes = strlen(input);
+    size_t out_bytes = in_bytes * 4; // UTF-8로 변환할 경우 더 큰 버퍼 필요
+    char* output = malloc(out_bytes);
+    if (!output) {
+        perror("malloc");
+        iconv_close(conv);
+        return NULL;
+    }
+
+    char* in_buf = (char*)input;
+    char* out_buf = output;
+    memset(out_buf, 0, out_bytes); // 출력 버퍼 초기화
+
+    size_t result = iconv(conv, &in_buf, &in_bytes, &out_buf, &out_bytes);
+    if (result == (size_t)-1) {
+        perror("iconv");
+        free(output);
+        output = NULL;
+    }
+
+    iconv_close(conv);
+    return output;
+}
+
+// HTTPS 요청을 처리하는 함수
+void handle_https_request(int connection_sock, const char *url) {
+    CURL *curl; // CURL 핸들
+    CURLcode res; // CURL 결과 코드
+    char *response = malloc(BUFFER_SIZE); // 초기 버퍼 크기로 메모리 할당
+    if (!response) {
+        perror("Failed to allocate memory"); // 메모리 할당 실패 시 에러 출력
+        closeSocket(connection_sock); // 소켓 닫기
+        return;
+    }
+    memset(response, 0, BUFFER_SIZE); // 버퍼 초기화
+
+    curl_global_init(CURL_GLOBAL_DEFAULT); // CURL 전역 초기화
+    curl = curl_easy_init(); // CURL 핸들 초기화
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url); // 요청할 URL 설정
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback); // 데이터 쓰기 콜백 함수 설정
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response); // 데이터를 저장할 포인터 설정
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // 리다이렉트를 따라가도록 설정
+        
+        res = curl_easy_perform(curl); // CURL 요청 수행
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res)); // 요청 실패 시 에러 출력
+            const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
+                                     "Content-Type: text/plain\r\n"
+                                     "Connection: close\r\n\r\n"
+                                     "Internal Server Error"; // 서버 오류 메시지
+            send(connection_sock, error_msg, strlen(error_msg), 0); // 클라이언트에 오류 메시지 전송
+        } else {
+            char *content_type;
+            curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &content_type); // Content-Type 가져오기
+            if (content_type) {
+                printf("Content-Type: %s\n", content_type); // Content-Type 출력
+            }
+
+            // 응답을 UTF-8로 변환
+            char *converted_response = convert_encoding(response, "ISO-8859-1", "UTF-8"); // 원래 인코딩에 따라 수정 필요
+            if (converted_response) {
+                const char *cors_headers = "HTTP/1.1 200 OK\r\n"
+                                           "Access-Control-Allow-Origin: *\r\n"
+                                           "Content-Type: text/html; charset=utf-8\r\n" // 인코딩 추가
+                                           "Connection: close\r\n\r\n"; // 정상 응답 헤더
+                send(connection_sock, cors_headers, strlen(cors_headers), 0); // 클라이언트에 정상 응답 헤더 전송
+                send(connection_sock, converted_response, strlen(converted_response), 0); // 클라이언트에 응답 내용 전송
+                free(converted_response); // 변환된 응답 메모리 해제
+            } else {
+                const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
+                                         "Content-Type: text/plain\r\n"
+                                         "Connection: close\r\n\r\n"
+                                         "Internal Server Error"; // 서버 오류 메시지
+                send(connection_sock, error_msg, strlen(error_msg), 0); // 클라이언트에 오류 메시지 전송
+            }
+        }
+
+        curl_easy_cleanup(curl); // CURL 핸들 정리
+    }
+
+    free(response); // 동적으로 할당한 메모리 해제
+    closeSocket(connection_sock); // 클라이언트 소켓 닫기
+}
+
+// "/view=" 요청을 처리하는 함수
+void handle_view(int connection_sock) {
+    char *url_query = strstr(buffer, VIEW_URL); // 버퍼에서 VIEW_URL 찾기
+    if (url_query) {
+        url_query += strlen(VIEW_URL); // URL 쿼리 시작점 설정
+        char *end = strchr(url_query, ' '); // 공백 문자 찾기
+        if (end) *end = '\0'; // 공백 문자로 문자열 종료
+
+        // HTTPS 요청 처리
+        char url[BUFFER_SIZE];
+        snprintf(url, sizeof(url), "https://%s", url_query); // HTTPS URL 생성
+        handle_https_request(connection_sock, url); // HTTPS 요청 처리 함수 호출
+    } else {
+        const char *response = "HTTP/1.1 400 Bad Request\r\n"
+                               "Content-Type: text/plain\r\n"
+                               "Connection: close\r\n\r\n"
+                               "Bad Request"; // 잘못된 요청 응답 메시지
+        send(connection_sock, response, strlen(response), 0); // 클라이언트에 응답 전송
+        closeSocket(connection_sock); // 소켓 닫기
+    }
+}
+
+// "/search=" 요청을 처리하는 함수
+void handle_search(int connection_sock) {
+    char *search_query = strstr(buffer, SEARCH_URL); // 버퍼에서 SEARCH_URL 찾기
+    if (search_query) {
+        search_query += strlen(SEARCH_URL); // 검색 쿼리 시작점 설정
+        char *end = strchr(search_query, ' '); // 공백 문자 찾기
+        if (end) *end = '\0'; // 공백 문자로 문자열 종료
+
+        // 검색 기록을 로그에 남기기
+        log_search_query(search_query); // 검색 쿼리를 파일에 기록
+
+        // HTTPS 요청 처리
+        char url[BUFFER_SIZE];
+        snprintf(url, sizeof(url), "https://www.google.com/search?q=%s", search_query); // Google 검색 URL 생성
+        handle_https_request(connection_sock, url); // HTTPS 요청 처리 함수 호출
+    } else {
+        const char *response = "HTTP/1.1 400 Bad Request\r\n"
+                               "Content-Type: text/plain\r\n"
+                               "Connection: close\r\n\r\n"
+                               "Bad Request"; // 잘못된 요청 응답 메시지
+        send(connection_sock, response, strlen(response), 0); // 클라이언트에 응답 전송
+        closeSocket(connection_sock); // 소켓 닫기
+    }
+}
+
+//검색기록 확인하는 함수
+void handle_history(int connection_sock) {
+    FILE *file = fopen("search_history.txt", "r"); // 파일을 읽기 모드로 엽니다.
+    if (file == NULL) {
+        perror("파일 열기 실패");
+        const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Connection: close\r\n\r\n"
+                                "Internal Server Error";
+        send(connection_sock, error_msg, strlen(error_msg), 0);
         closeSocket(connection_sock);
         return;
     }
 
-    buffer[received] = '\0';
-}
+    // 파일 내용을 읽어와서 클라이언트에 전송
+    const char *header = "HTTP/1.1 200 OK\r\n"
+                         "Content-Type: text/plain; charset=utf-8\r\n"
+                         "Connection: close\r\n\r\n";
+    send(connection_sock, header, strlen(header), 0);
 
-void handle_view(int connection_sock) {
-
-    // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
-    char *hostname = strstr(buffer, "view=");
-    printf("%s\n", hostname);
-
-    if (hostname) {
-        /*
-        * REQEUST
-        */
-        char web_request[BUFFER_SIZE];
-
-        int web_sock = socket(AF_INET, SOCK_STREAM, 0); // 가져올 뷰에 연결할 소켓 생성(IPv4), SOCK_STREAM : TCP사용하겠다.
-        struct sockaddr_in web_address; // google 주소 구조체
-        struct hostent *host = gethostbyname(hostname); // 도메인이름 => ip주소로 변환
-        
-        web_address.sin_family = AF_INET;
-        web_address.sin_port = htons(80);
-        memcpy(&web_address.sin_addr.s_addr, host->h_addr, host->h_length);
-
-        connect(web_sock, (struct sockaddr*)&web_address, sizeof(web_address));
-        send(web_sock, web_request, strlen(web_request), 0);
-
-        /*
-        * RESPONSE
-        */
-
-        int response_size = BUFFER_SIZE; // 초기 크기
-        char *response = (char *)malloc(response_size); // 동적 메모리 할당
-        int total_received = 0; // 총 수신된 바이트 수 저장 변수
-        int rcvd_bytes; // 각 recv 호출 시 수신된 바이트 수 저장 변수
-
-        while ((rcvd_bytes = recv(web_sock, response + total_received, response_size - total_received - 1, 0)) > 0) {
-            total_received += rcvd_bytes;
-
-            // 메모리 크기가 초과되면 realloc으로 크기를 두 배로 늘림
-            if (total_received >= response_size - 1) {
-                response_size *= 2;
-                response = (char *)realloc(response, response_size);
-                if (!response) { // 메모리 할당 실패 시
-                    perror("Memory allocation failed");
-                    closeSocket(web_sock);
-                    closeSocket(connection_sock);
-                    return;
-                }
-            }
-        }
-        response[total_received] = '\0'; // null 문자로 응답 데이터 종료
-
-        /***** react(client)에서 포트5173을 사용하고, 지금 이 서버코드는 8080포트를 사용하기 때문에 cors에러 해결 *****/
-        const char *cors_headers = "HTTP/1.1 200 OK\r\n"
-                                    "Access-Control-Allow-Origin: *\r\n"
-                                    "Content-Type: text/html\r\n"
-                                    "Connection: close\r\n\r\n";
-
-        send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
-        send(connection_sock, response, total_received, 0); // 구글 응답 데이터 전송
-
-        free(response); // 동적 메모리 해제
-        closeSocket(web_sock); // 구글 소켓 닫기
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        send(connection_sock, line, strlen(line), 0); // 각 줄을 클라이언트에 전송
     }
+
+    fclose(file); // 파일 닫기
+    closeSocket(connection_sock); // 소켓 닫기
 }
 
-// client 요청 처리 함수
-void handle_search(int connection_sock) {
 
-    // 수신된 buffer에서 문자열 "search="를 탐색 후 위치 반환
-    char *search_query = strstr(buffer, "search=");
-
-    if (search_query) {
-        /*
-         전처리 
-         */ 
-        search_query += strlen("search="); // "search="문자열의 끝으로 포인터 이동
-        char *end = strchr(search_query, ' '); // 공백문자 위치 반환
-        if (end) *end = '\0';
-
-        // search_query를 URL 쿼리 파라미터로 사용하여 검색 요청을 형성.
-        char google_request[BUFFER_SIZE];
-        snprintf(google_request, sizeof(google_request), 
-                 "GET /search?q=%s HTTP/1.1\r\nHost: www.google.com\r\nConnection: close\r\n\r\n", 
-                 search_query);
-
-        /*
-         * 구글에게 REQUEST 
-         */ 
-        int google_sock = socket(AF_INET, SOCK_STREAM, 0); // 구글에 연결할 소켓 생성(IPv4), SOCK_STREAM : TCP사용하겠다.
-        struct sockaddr_in google_address; // google 주소 구조체
-        struct hostent *host = gethostbyname("www.google.com"); // 도메인이름 => ip주소로 변환
-        
-        google_address.sin_family = AF_INET;
-        google_address.sin_port = htons(80);
-        memcpy(&google_address.sin_addr.s_addr, host->h_addr, host->h_length);
-
-        connect(google_sock, (struct sockaddr*)&google_address, sizeof(google_address));
-        send(google_sock, google_request, strlen(google_request), 0);
-
-        /*
-         * 구글의 RESPONSE
-         * 동적 메모리 할당을 통해 응답 데이터를 받기 위한 배열을 준비
-         */
-        int response_size = BUFFER_SIZE; // 초기 크기
-        char *response = (char *)malloc(response_size); // 동적 메모리 할당
-        int total_received = 0; // 총 수신된 바이트 수 저장 변수
-        int rcvd_bytes; // 각 recv 호출 시 수신된 바이트 수 저장 변수
-
-        while ((rcvd_bytes = recv(google_sock, response + total_received, response_size - total_received - 1, 0)) > 0) {
-            total_received += rcvd_bytes;
-
-            // 메모리 크기가 초과되면 realloc으로 크기를 두 배로 늘림
-            if (total_received >= response_size - 1) {
-                response_size *= 2;
-                response = (char *)realloc(response, response_size);
-                if (!response) { // 메모리 할당 실패 시
-                    perror("Memory allocation failed");
-                    closeSocket(google_sock);
-                    closeSocket(connection_sock);
-                    return;
-                }
-            }
-        }
-        response[total_received] = '\0'; // null 문자로 응답 데이터 종료
-
-        /***** react(client)에서 포트5173을 사용하고, 지금 이 서버코드는 8080포트를 사용하기 때문에 cors에러 해결 *****/
-        const char *cors_headers = "HTTP/1.1 200 OK\r\n"
-                                   "Access-Control-Allow-Origin: *\r\n"
-                                   "Content-Type: text/html\r\n"
-                                   "Connection: close\r\n\r\n";
-
-        send(connection_sock, cors_headers, strlen(cors_headers), 0); // CORS 헤더 전송
-        send(connection_sock, response, total_received, 0); // 구글 응답 데이터 전송
-
-        free(response); // 동적 메모리 해제
-        closeSocket(google_sock); // 구글 소켓 닫기
-    }
-    closeSocket(connection_sock); // 클라이언트 소켓 닫기
-}
-
+// 메인 함수
 int main() {
     #ifdef _WIN32
-        WSADATA wsaData;
-        WSAStartup(MAKEWORD(2, 2), &wsaData); // 윈도우에서 소켓 초기화
+        WSADATA wsaData; // Windows 소켓 데이터
+        WSAStartup(MAKEWORD(2, 2), &wsaData); // Windows 소켓 초기화
     #endif
 
-    int server_sock = socket(AF_INET, SOCK_STREAM, 0); // 서버소켓 생성
+    int server_sock = socket(AF_INET, SOCK_STREAM, 0); // TCP 소켓 생성
     struct sockaddr_in server_address; // 서버 주소 구조체
     server_address.sin_family = AF_INET; // IPv4
-    server_address.sin_port = htons(PORT); // 8080포트 사용
-    server_address.sin_addr.s_addr = INADDR_ANY;
+    server_address.sin_port = htons(PORT); // 포트 설정
+    server_address.sin_addr.s_addr = INADDR_ANY; // 모든 IP 주소 수신
 
-    bind(server_sock, (struct sockaddr*)&server_address, sizeof(server_address)); // 소켓에 주소 바인딩
-    listen(server_sock, 5); // 클라이언트 요청 대기(소켓이 동시에 대기할 수 있는 연결 요청의 최대 수)
-    
-    printf("Listening on port %d\n", PORT);
-    
-    while (1) {
-        // 서버는 계속해서 클라이언트의 요청을 대기한다.
-        int connection_sock = accept(server_sock, NULL, NULL); // 클라이언트의 연결요청 수락
-        char method[10], url[256];
-
-        receiveSocket(connection_sock);
-
-        sscanf(buffer, "%s", method);
-        sscanf(buffer + strlen(method) + 1, "%s", url);
-        printf("%s %s\n", method, url);
-
-        if(strstr(buffer, SEARCH_URL) != NULL) {
-            handle_search(connection_sock); // 요청 처리함수(위에 정의된 함수)
-        }
-        else {
-            // TODO 웹 페이지 띄우기
-            handle_view(connection_sock);
-        }
+    // 소켓에 주소 바인딩
+    if (bind(server_sock, (struct sockaddr*)&server_address, sizeof(server_address)) < 0) {
+        perror("bind failed"); // 바인딩 실패 시 에러 출력
+        return 1;
     }
 
-    close(server_sock); // POSIX에서는 close를 사용
+    // 클라이언트 연결 요청 리슨
+    if (listen(server_sock, 5) < 0) {
+        perror("listen failed"); // 리슨 실패 시 에러 출력
+        return 1;
+    }
+    
+    printf("Listening on port %d\n", PORT); // 리슨 시작 메시지 출력
+    
+    while (1) { // 무한 루프
+        int connection_sock = accept(server_sock, NULL, NULL); // 클라이언트 연결 수락
+        if (connection_sock < 0) {
+            perror("accept failed"); // 연결 수락 실패 시 에러 출력
+            continue; // 다음 요청으로 진행
+        }
+
+        receiveSocket(connection_sock); // 클라이언트로부터 데이터 수신
+        
+        char method[10]; // HTTP 메서드를 저장할 배열
+        sscanf(buffer, "%s", method); // 요청에서 메서드 추출
+        printf("Method: %s\n", method); // 메서드 출력
+
+        // 요청 URL에 따라 적절한 핸들러 호출
+        if (strstr(buffer, SEARCH_URL) != NULL) {
+            handle_search(connection_sock); // 검색 요청 처리
+        } else if (strstr(buffer, "/history") != NULL) {
+            handle_history(connection_sock); // 검색 기록 요청 처리
+        } else {
+            handle_view(connection_sock); // 뷰 요청 처리
+     }
+    }
+
+    close(server_sock); // 서버 소켓 닫기
     #ifdef _WIN32
-        WSACleanup(); // 윈도우에서 소켓 종료
+        WSACleanup(); // Windows 소켓 정리
     #endif
-    return 0;
+    return 0; // 프로그램 종료
 }
