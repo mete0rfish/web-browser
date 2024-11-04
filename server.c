@@ -9,6 +9,17 @@ void closeSocket(int socket) {
     #endif
 }
 
+//파일에다 검색기록 로그 남기기
+void log_search_query(const char *query) {
+    FILE *file = fopen("search_history", "a"); // 파일을 추가 모드로 엽니다.
+    if (file == NULL) {
+        perror("파일 열기 실패");
+        return;
+    }
+    fprintf(file, "%s\n", query); // 쿼리를 파일에 작성합니다.
+    fclose(file); // 파일을 닫습니다.
+}
+
 // 클라이언트로부터 데이터를 수신하는 함수
 void receiveSocket(int connection_sock) {
     int received = recv(connection_sock, buffer, sizeof(buffer) - 1, 0); // 클라이언트로부터 데이터 수신
@@ -76,63 +87,69 @@ char* convert_encoding(const char* input, const char* from_enc, const char* to_e
 
 // HTTPS 요청을 처리하는 함수
 void handle_https_request(int connection_sock, const char *url) {
-    CURL *curl; // CURL 핸들
-    CURLcode res; // CURL 결과 코드
-    char *response = malloc(BUFFER_SIZE); // 초기 버퍼 크기로 메모리 할당
+    CURL *curl;
+    CURLcode res;
+    char *response = malloc(BUFFER_SIZE);
     if (!response) {
-        perror("Failed to allocate memory"); // 메모리 할당 실패 시 에러 출력
-        closeSocket(connection_sock); // 소켓 닫기
+        perror("Failed to allocate memory");
+        closeSocket(connection_sock);
         return;
     }
-    memset(response, 0, BUFFER_SIZE); // 버퍼 초기화
+    memset(response, 0, BUFFER_SIZE);
 
-    curl_global_init(CURL_GLOBAL_DEFAULT); // CURL 전역 초기화
-    curl = curl_easy_init(); // CURL 핸들 초기화
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url); // 요청할 URL 설정
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback); // 데이터 쓰기 콜백 함수 설정
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response); // 데이터를 저장할 포인터 설정
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L); // 리다이렉트를 따라가도록 설정
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         
-        res = curl_easy_perform(curl); // CURL 요청 수행
+        res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
-            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res)); // 요청 실패 시 에러 출력
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
             const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
                                      "Content-Type: text/plain\r\n"
                                      "Connection: close\r\n\r\n"
-                                     "Internal Server Error"; // 서버 오류 메시지
-            send(connection_sock, error_msg, strlen(error_msg), 0); // 클라이언트에 오류 메시지 전송
+                                     "Internal Server Error";
+            send(connection_sock, error_msg, strlen(error_msg), 0);
         } else {
-            char *content_type;
-            curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &content_type); // Content-Type 가져오기
-            if (content_type) {
-                printf("Content-Type: %s\n", content_type); // Content-Type 출력
-            }
-
-            // 응답을 UTF-8로 변환
-            char *converted_response = convert_encoding(response, "ISO-8859-1", "UTF-8"); // 원래 인코딩에 따라 수정 필요
-            if (converted_response) {
+            char *content_type = NULL;
+            curl_easy_getinfo(curl, CURLINFO_CONTENT_TYPE, &content_type);
+            if (content_type && strstr(content_type, "ISO-8859-1")) {
+                // ISO-8859-1로 받은 응답을 UTF-8로 변환
+                char *converted_response = convert_encoding(response, "ISO-8859-1", "UTF-8");
+                if (converted_response) {
+                    const char *cors_headers = "HTTP/1.1 200 OK\r\n"
+                                               "Access-Control-Allow-Origin: *\r\n"
+                                               "Content-Type: text/html; charset=utf-8\r\n"
+                                               "Connection: close\r\n\r\n";
+                    send(connection_sock, cors_headers, strlen(cors_headers), 0);
+                    send(connection_sock, converted_response, strlen(converted_response), 0);
+                    free(converted_response);
+                } else {
+                    const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
+                                             "Content-Type: text/plain\r\n"
+                                             "Connection: close\r\n\r\n"
+                                             "Encoding Conversion Error";
+                    send(connection_sock, error_msg, strlen(error_msg), 0);
+                }
+            } else {
+                // 이미 UTF-8로 되어 있을 경우, 변환 없이 전송
                 const char *cors_headers = "HTTP/1.1 200 OK\r\n"
                                            "Access-Control-Allow-Origin: *\r\n"
-                                           "Content-Type: text/html; charset=utf-8\r\n" // 인코딩 추가
-                                           "Connection: close\r\n\r\n"; // 정상 응답 헤더
-                send(connection_sock, cors_headers, strlen(cors_headers), 0); // 클라이언트에 정상 응답 헤더 전송
-                send(connection_sock, converted_response, strlen(converted_response), 0); // 클라이언트에 응답 내용 전송
-                free(converted_response); // 변환된 응답 메모리 해제
-            } else {
-                const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
-                                         "Content-Type: text/plain\r\n"
-                                         "Connection: close\r\n\r\n"
-                                         "Internal Server Error"; // 서버 오류 메시지
-                send(connection_sock, error_msg, strlen(error_msg), 0); // 클라이언트에 오류 메시지 전송
+                                           "Content-Type: text/html; charset=utf-8\r\n"
+                                           "Connection: close\r\n\r\n";
+                send(connection_sock, cors_headers, strlen(cors_headers), 0);
+                send(connection_sock, response, strlen(response), 0);
             }
         }
 
-        curl_easy_cleanup(curl); // CURL 핸들 정리
+        curl_easy_cleanup(curl);
     }
 
-    free(response); // 동적으로 할당한 메모리 해제
-    closeSocket(connection_sock); // 클라이언트 소켓 닫기
+    free(response);
+    closeSocket(connection_sock);
 }
 
 // "/view=" 요청을 처리하는 함수
@@ -165,6 +182,9 @@ void handle_search(int connection_sock) {
         char *end = strchr(search_query, ' '); // 공백 문자 찾기
         if (end) *end = '\0'; // 공백 문자로 문자열 종료
 
+        // 검색 기록을 로그에 남기기
+        log_search_query(search_query); // 검색 쿼리를 파일에 기록
+
         // HTTPS 요청 처리
         char url[BUFFER_SIZE];
         snprintf(url, sizeof(url), "https://www.google.com/search?q=%s", search_query); // Google 검색 URL 생성
@@ -178,6 +198,45 @@ void handle_search(int connection_sock) {
         closeSocket(connection_sock); // 소켓 닫기
     }
 }
+
+//검색기록 확인하는 함수
+void handle_history(int connection_sock) {
+    FILE *file = fopen("search_history", "r"); // 파일을 읽기 모드로 엽니다.
+    if (file == NULL) {
+        perror("파일 열기 실패");
+        const char *error_msg = "HTTP/1.1 500 Internal Server Error\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Connection: close\r\n\r\n"
+                                "Internal Server Error";
+        send(connection_sock, error_msg, strlen(error_msg), 0);
+        closeSocket(connection_sock);
+        return;
+    }
+
+    // 파일 내용을 읽어와서 클라이언트에 전송
+    const char *header = "HTTP/1.1 200 OK\r\n"
+                         "Content-Type: text/plain; charset=utf-8\r\n"
+                         "Connection: close\r\n\r\n";
+    send(connection_sock, header, strlen(header), 0);
+
+    char line[256];
+    while (fgets(line, sizeof(line), file)) {
+        send(connection_sock, line, strlen(line), 0); // 각 줄을 클라이언트에 전송
+    }
+
+    fclose(file); // 파일 닫기
+    closeSocket(connection_sock); // 소켓 닫기
+}
+
+//프로그램 종료시 검색기록이 존재하는 텍스트 파일 내용 삭제
+void delete_search_history() {
+    if (remove("search_history") == 0) {
+        printf("검색 기록 파일이 삭제되었습니다.\n");
+    } else {
+        perror("파일 삭제 실패");
+    }
+}
+
 
 // 메인 함수
 int main() {
@@ -222,12 +281,17 @@ int main() {
         // 요청 URL에 따라 적절한 핸들러 호출
         if (strstr(buffer, SEARCH_URL) != NULL) {
             handle_search(connection_sock); // 검색 요청 처리
+        } else if (strstr(buffer, "/history") != NULL) {
+            handle_history(connection_sock); // 검색 기록 요청 처리
         } else {
             handle_view(connection_sock); // 뷰 요청 처리
-        }
+     }
     }
 
+  
+
     close(server_sock); // 서버 소켓 닫기
+    delete_search_history();
     #ifdef _WIN32
         WSACleanup(); // Windows 소켓 정리
     #endif
