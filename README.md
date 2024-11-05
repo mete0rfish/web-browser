@@ -25,7 +25,7 @@
 1. root 디렉토리에서 터미널에 npm i 입력한다.
 2. root 디렉토리에서 npm run dev를 실행한다.
 3. ./server를 이용해 컴파일된 c를 실행시켜 서버를 가동한다.
-> UNIX : gcc -o server server.c -lcurl -liconv
+> UNIX : gcc server.c viewer.c google_search.c search_history.c -o server -lcurl -liconv
 　
 4. 웹 사이트 url에 http://localhost:5173/ 로 접속한다
 5. 접속하면 나오는 검색창에 검색을 하고 결과를 확인한다.
