@@ -36,6 +36,7 @@ export default function SearchBox() {
     setSearchTerm("");
     setViewTerm("");
     setContent("");
+    window.location.href = "/";
   };
 
   const openModal = () => {
