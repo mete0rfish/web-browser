@@ -9,7 +9,7 @@ export default function SearchBox() {
   const handleSearch = async () => {
     try {
       const response = await fetch(
-        `http://localhost:8080/search=${searchTerm}`
+        `http://localhost:8080/search=${encodeURIComponent(searchTerm)}`
       );
       const data = await response.text();
 

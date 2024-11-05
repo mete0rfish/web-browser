@@ -9,6 +9,27 @@ void closeSocket(int socket) {
     #endif
 }
 
+char* url_decode(const char* src) {
+    char* decoded = malloc(strlen(src) + 1);
+    char* p = decoded;
+
+    while (*src) {
+        if (*src == '%') {
+            int value;
+            sscanf(src + 1, "%2x", &value);
+            *p++ = (char)value;
+            src += 3; // Skip the '%' and the two hex digits
+        } else if (*src == '+') {
+            *p++ = ' '; // Convert '+' to space
+            src++;
+        } else {
+            *p++ = *src++;
+        }
+    }
+    *p = '\0'; // Null-terminate the decoded string
+    return decoded;
+}
+
 /*
  * 클라이언트로부터 데이터를 수신하는 받아 buffer에 저장
  */ 
@@ -164,6 +185,11 @@ void handle_history(int connection_sock) {
     const char *header = "HTTP/1.1 200 OK\r\n"
                          "Content-Type: text/plain; charset=utf-8\r\n"
                          "Connection: close\r\n\r\n";
+    const char *cors_headers = "HTTP/1.1 200 OK\r\n"
+                               "Access-Control-Allow-Origin: *\r\n"
+                               "Content-Type: text/html; charset=utf-8\r\n"
+                               "Connection: close\r\n\r\n";
+    send(connection_sock, cors_headers, strlen(cors_headers), 0);
     send(connection_sock, header, strlen(header), 0);
 
     char line[256];
@@ -192,8 +218,9 @@ void handle_search(int connection_sock) {
         char *end = strchr(search_query, ' '); // 공백 문자 찾기
         if (end) *end = '\0'; // 공백 문자로 문자열 종료
 
+        char *decoded_query = url_decode(search_query);
         // 검색 기록을 로그에 남기기
-        log_search_query(search_query); // 검색 쿼리를 파일에 기록
+        log_search_query(decoded_query); // 검색 쿼리를 파일에 기록
 
         // HTTPS 요청 처리
         char url[BUFFER_SIZE];
