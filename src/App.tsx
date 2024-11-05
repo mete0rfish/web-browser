@@ -5,6 +5,7 @@ import SearchBox from "./components/SearchBox";
 
 function App() {
   const { content } = useContext(HtmlContext);
+  console.log(content);
 
   return (
     <>
